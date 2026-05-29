@@ -1219,16 +1219,133 @@ class IOTScanner:
             # Suche nach Metasploit-Exploits
             print(f"\n{Color.GREEN}4. Suche nach Metasploit-Exploits...{Color.RESET}")
             if self._check_metasploit_installation():
-                # Führe eine Metasploit-Suche für bekannte Dienste durch
-                print(f"\n{Color.YELLOW}Metasploit-Integration ist verfügbar. Suche nach Exploits...{Color.RESET}")
-                # Hier könnte eine automatisierte Suche nach Exploits für gefundene Dienste implementiert werden
+                print(f"\n{Color.YELLOW}Metasploit-Integration ist verfügbar. "
+                      f"Durchsuche gefundene Dienste/CVEs...{Color.RESET}")
+                self._metasploit_search_after_scan(network_range)
             else:
                 print(f"\n{Color.YELLOW}Metasploit ist nicht verfügbar. Überspringe Exploit-Suche.{Color.RESET}")
-            
+
             print(f"\n{Color.GREEN}Vollständiger Pentest abgeschlossen.{Color.RESET}")
         except Exception as e:
             logging.error(f"Fehler beim vollständigen Pentest: {str(e)}")
             print(f"\n{Color.RED}Fehler beim Pentest: {str(e)}{Color.RESET}")
+
+    def _resolve_scan_hosts(self, network_range: str) -> List[str]:
+        """Ermittelt die gescannten Hosts (aus der DB) im angegebenen Bereich."""
+        import ipaddress
+        nr = (network_range or '').strip()
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                c = conn.cursor()
+                c.execute("SELECT ip FROM devices")
+                all_ips = [r[0] for r in c.fetchall() if r[0]]
+        except Exception as e:
+            logging.error(f"Fehler beim Laden der Hosts: {str(e)}")
+            return []
+
+        if not nr:
+            return all_ips
+        try:
+            net = ipaddress.ip_network(nr, strict=False)
+        except ValueError:
+            return [ip for ip in all_ips if ip == nr]
+        hosts = []
+        for ip in all_ips:
+            try:
+                if ipaddress.ip_address(ip) in net:
+                    hosts.append(ip)
+            except ValueError:
+                continue
+        return hosts
+
+    def _metasploit_search_after_scan(self, network_range: str) -> None:
+        """Durchsucht Metasploit nach den im Scan gefundenen Diensten und CVEs.
+
+        Für jeden Host im Bereich werden Dienst-Produktnamen (z. B. vsftpd, samba)
+        und gefundene CVEs gesammelt, in Metasploit gesucht und die gefundenen
+        Module angezeigt sowie in der Datenbank gespeichert.
+        """
+        import re
+        try:
+            hosts = self._resolve_scan_hosts(network_range)
+            if not hosts:
+                print(f"{Color.YELLOW}Keine gescannten Hosts im Bereich '{network_range}' gefunden.{Color.RESET}")
+                return
+
+            for host in hosts:
+                # Dienste + CVEs aus der DB laden
+                services = ''
+                vuln_blob = ''
+                try:
+                    with sqlite3.connect(self.db_name) as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT services FROM devices WHERE ip=?", (host,))
+                        row = c.fetchone()
+                        services = row[0] if row and row[0] else ''
+                        c.execute("SELECT cve_id, description FROM vulnerability_details WHERE device_ip=?", (host,))
+                        vuln_blob = ' '.join(
+                            ((r[0] or '') + ' ' + (r[1] or '')) for r in c.fetchall()
+                        )
+                except Exception as e:
+                    logging.error(f"Fehler beim Laden der Scan-Daten für {host}: {str(e)}")
+
+                # Dienst-Produktnamen aus den Klammern extrahieren (z. B. "(vsftpd 3.0.2)")
+                products = []
+                for m in re.finditer(r'\(([A-Za-z][\w\-]+)', services):
+                    p = m.group(1).lower()
+                    if p not in products and p not in ('nmap',):
+                        products.append(p)
+
+                # CVEs sammeln (dedupliziert)
+                cves = []
+                for cve in re.findall(r'CVE-\d{4}-\d{4,7}', vuln_blob):
+                    if cve not in cves:
+                        cves.append(cve)
+
+                if not products and not cves:
+                    print(f"\n{Color.YELLOW}{host}: keine Dienste/CVEs für eine Metasploit-Suche vorhanden.{Color.RESET}")
+                    continue
+
+                # Suchbegriffe: erst Dienste, dann CVEs; auf ein vernünftiges Limit kürzen
+                search_terms = [(f"Dienst '{p}'", p) for p in products]
+                search_terms += [(f"CVE {cve}", f"cve:{cve}") for cve in cves]
+                MAX_TERMS = 15
+                if len(search_terms) > MAX_TERMS:
+                    print(f"{Color.YELLOW}{len(search_terms)} Suchbegriffe gefunden – "
+                          f"begrenze auf {MAX_TERMS}.{Color.RESET}")
+                    search_terms = search_terms[:MAX_TERMS]
+
+                print(f"\n{Color.BLUE}=== Host {host}: durchsuche Metasploit "
+                      f"({len(search_terms)} Begriffe, kann etwas dauern) ==={Color.RESET}")
+
+                found_modules = set()
+                try:
+                    for label, term in search_terms:
+                        print(f"\n{Color.GREEN}>>> Suche: {label}{Color.RESET}")
+                        result = self.metasploit.search_exploits(term)
+                        if result.get('success') and result.get('output'):
+                            for mod in re.findall(r'((?:exploit|auxiliary|post)/[\w/]+)',
+                                                  result['output']):
+                                found_modules.add(mod)
+                except KeyboardInterrupt:
+                    print(f"\n{Color.YELLOW}Metasploit-Suche abgebrochen.{Color.RESET}")
+
+                if found_modules:
+                    print(f"\n{Color.RED}{host}: {len(found_modules)} potenzielle "
+                          f"Metasploit-Module gefunden:{Color.RESET}")
+                    for mod in sorted(found_modules):
+                        print(f"  {Color.RED}{mod}{Color.RESET}")
+                    try:
+                        self.scanner.update_metasploit_exploits(host, sorted(found_modules))
+                        print(f"  {Color.GREEN}-> in der Datenbank gespeichert.{Color.RESET}")
+                    except Exception as e:
+                        logging.error(f"Fehler beim Speichern der Exploits für {host}: {str(e)}")
+                else:
+                    print(f"\n{Color.YELLOW}{host}: keine passenden Metasploit-Module gefunden.{Color.RESET}")
+
+        except Exception as e:
+            logging.error(f"Fehler bei der Metasploit-Suche: {str(e)}")
+            print(f"\n{Color.RED}Fehler bei der Metasploit-Suche: {str(e)}{Color.RESET}")
     
     def _clear_input_buffer(self) -> None:
         """Leert den Input-Buffer (plattformabhängig)"""
