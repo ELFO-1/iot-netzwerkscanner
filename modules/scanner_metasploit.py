@@ -24,6 +24,53 @@ from threading import Timer  # Für die Fortschrittsanzeige
 import nmap
 from .utils import Color, decode_unicode_escape
 
+
+def normalize_findings(text):
+    """Zerlegt einen Roh-Schwachstellentext in normalisierte Einzelfunde.
+
+    Rückgabe: Liste von (cve_id, cvss_float_or_None, beschreibung).
+    - CVE-Zeilen werden mit ihrem CVSS-Score erkannt.
+    - Bekannte Nicht-CVE-Schwächen (SSL/TLS etc.) werden benannt eingestuft.
+    - Ein Blob mit vielen CVEs wird in mehrere Funde aufgeteilt (dedupliziert).
+    """
+    if not text:
+        return []
+    out, seen = [], set()
+
+    # CVE-Zeilen (optional mit CVSS-Score direkt dahinter, z. B. "CVE-2021-3618\t7.4")
+    for m in re.finditer(r'(CVE-\d{4}-\d{4,7})(?:[\s\t]+(\d{1,2}\.\d))?', text):
+        cve, score = m.group(1), m.group(2)
+        if cve in seen:
+            continue
+        seen.add(cve)
+        desc = cve + (f" (CVSS {score})" if score else "")
+        out.append((cve, float(score) if score else None, desc))
+
+    # Bekannte Nicht-CVE-Schwächen (Muster, Anzeigetext, Richt-CVSS)
+    weaknesses = [
+        (r'SWEET32', 'SWEET32: 64-Bit-Block-Cipher (3DES) angreifbar', 5.9),
+        (r'Gesamtbewertung:\s*F|least strength:\s*F', 'Schwache SSL/TLS-Cipher (Bewertung F)', 7.0),
+        (r'SHA1-Signatur|Insecure certificate signature \(SHA1\)', 'Unsicheres Zertifikat: SHA1-Signatur', 5.0),
+        (r'POODLE', 'POODLE (SSLv3)', 6.0),
+        (r'Slowloris', 'Slowloris-DoS', 5.0),
+        (r'Schwacher öffentlicher Schlüssel|Public Key bits:\s*(?:512|1024)\b',
+         'Schwacher öffentlicher Schlüssel (<2048 Bit)', 5.0),
+    ]
+    for pat, label, sc in weaknesses:
+        if re.search(pat, text, re.IGNORECASE) and label not in seen:
+            seen.add(label)
+            out.append((None, sc, label))
+
+    # Nichts erkannt -> Originaltext (erste Zeile, gekürzt) als ein Fund behalten,
+    # sofern es kein reines Rausch-Fragment ist (z. B. "State: LIKELY VULNERABLE").
+    if not out:
+        first = (text.strip().splitlines() or [''])[0].strip()
+        is_noise = re.match(r'^(State:|VULNERABLE\b|LIKELY\b|\|)', first, re.IGNORECASE)
+        if first and not is_noise:
+            out.append((None, None, first[:200]))
+    return out
+
+
 class Scanner:
     def __init__(self, db_name='iot_devices.db', default_network='192.168.0.0/24'):
         self.db_name = db_name
@@ -1143,18 +1190,31 @@ class Scanner:
                 WHERE ip = ?
             """, (vuln_json, metasploit_json, ip))
             
-            # Füge detaillierte Einträge hinzu
+            # Detaillierte Einträge NORMALISIERT speichern.
+            # Replace-on-Rescan: alte Einträge dieses Hosts zuerst entfernen,
+            # damit keine Duplikate über mehrere Scans hinweg entstehen.
             if isinstance(vulnerabilities, dict):
+                c.execute("DELETE FROM vulnerability_details WHERE device_ip = ?", (ip,))
+
+                seen = set()  # (port, cve_id|beschreibung) -> Duplikate vermeiden
                 for port, port_info in vulnerabilities.items():
-                    if isinstance(port_info, dict) and 'vulnerabilities' in port_info:
-                        for vuln in port_info['vulnerabilities']:
-                            if isinstance(vuln, str):
-                                # Einfache Speicherung als String
-                                c.execute("""
-                                    INSERT INTO vulnerability_details (device_ip, port, description)  
-                                    VALUES (?, ?, ?)
-                                """, (ip, port, vuln))
-            
+                    if not (isinstance(port_info, dict) and 'vulnerabilities' in port_info):
+                        continue
+                    for vuln in port_info['vulnerabilities']:
+                        if not isinstance(vuln, str):
+                            continue
+                        for cve_id, cvss, desc in normalize_findings(vuln):
+                            key = (str(port), cve_id or desc)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            severity = str(cvss) if cvss is not None else None
+                            c.execute("""
+                                INSERT INTO vulnerability_details
+                                    (device_ip, port, description, cve_id, severity)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (ip, str(port), desc, cve_id, severity))
+
             conn.commit()
             logging.info(f"Schwachstelleninformationen aktualisiert für {ip}")
             conn.close()
