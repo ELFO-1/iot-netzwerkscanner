@@ -65,7 +65,8 @@ def normalize_findings(text):
     # sofern es kein reines Rausch-Fragment ist (z. B. "State: LIKELY VULNERABLE").
     if not out:
         first = (text.strip().splitlines() or [''])[0].strip()
-        is_noise = re.match(r'^(State:|VULNERABLE\b|LIKELY\b|\|)', first, re.IGNORECASE)
+        is_noise = re.match(r'^(State:|VULNERABLE\b|LIKELY\b|Public Key bits|\|)',
+                            first, re.IGNORECASE)
         if first and not is_noise:
             out.append((None, None, first[:200]))
     return out

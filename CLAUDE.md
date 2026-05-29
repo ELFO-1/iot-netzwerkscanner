@@ -20,6 +20,9 @@ python3 test_circular_import.py
 
 # Test config loading
 python3 test_config.py
+
+# Unit tests for the parser/normalization logic (no extra deps)
+python3 -m unittest test_parsers -v
 ```
 
 ## System Dependencies
