@@ -1,0 +1,22 @@
+{
+    "quick": {
+        "name": "quick",
+        "description": "Schneller Scan (nur Ping)",
+        "args": "-sn"
+    },
+    "standard": {
+        "name": "standard",
+        "description": "Standardscan (Ports und Dienste)",
+        "args": "-sV -O"
+    },
+    "deep": {
+        "name": "deep",
+        "description": "Tiefgehender Scan (alle Ports, Banner)",
+        "args": "-sV -O -p- --script=banner"
+    },
+    "vulnerability": {
+        "name": "vulnerability",
+        "description": "Schwachstellenscan",
+        "args": "-sV --script=vuln"
+    }
+}

@@ -1,0 +1,86 @@
+# Beispiel-Konfiguration für den Pentesting Netzwerk Scanner v4.0
+# -------------------------------------------------------------------
+# Kopiere diese Datei nach "iot_config2.ini" und trage deine eigenen
+# Werte/API-Keys ein. Die echte iot_config2.ini ist via .gitignore vom
+# Git ausgeschlossen und darf NICHT committet werden (enthält Secrets).
+#
+#   cp iot_config2.ini.example iot_config2.ini
+
+[API]
+# API-Key für MAC-Vendor-Lookup (z. B. macaddress.io)
+mac_api_key = DEIN_MAC_API_KEY
+
+[DATABASE]
+db_name = iot_devices.db
+backup_enabled = true
+backup_interval = 86400
+
+[SCAN]
+default_network = 192.168.0.0/24
+scan_timeout = 300
+max_parallel_scans = 5
+# Schwachstellen-Scan: NSE-Skriptkategorien und Zusatzskripte
+vuln_script_categories = vuln,exploit,auth,default
+extra_scripts = ssl-enum-ciphers,ssl-poodle,ssl-dh-params
+# Brute-Force-NSE-Skripte (kann nmap zum Absturz bringen / dauert lange)
+enable_brute = false
+exclude_ssl_scripts = false
+# host_timeout leer lassen = kein Timeout (für langsame Geräte empfohlen)
+host_timeout =
+# Wiederholungen für den vulners-Lookup (gleicht API-Schwankungen aus)
+vulners_retries = 2
+
+[LOGGING]
+log_file = iot_scanner.log
+log_level = INFO
+
+[EXPORT]
+export_path = exports
+default_format = all
+detailed_vulnerabilities = true
+separate_metasploit = true
+
+[exporter]
+templates_dir = templates
+
+[metasploit]
+host = 127.0.0.1
+port = 55553
+username = msf
+password = msf
+
+msgrpc_service = 127.0.0.1:55552
+
+[ML]
+enabled = true
+model_path = models
+
+[TERMINAL]
+use_colors = true
+detailed_output = true
+show_banner = true
+show_progress = true
+
+[VULNERS]
+# Vulners-API-Key: https://vulners.com/  (kostenloser Account -> API-Key)
+vulners_api_key = DEIN_VULNERS_API_KEY
+
+[VULNERABILITY]
+enabled = true
+detailed_output = true
+severity_threshold = 5
+max_results = 50
+scan_interval = 43200
+store_history = true
+
+[METASPLOIT]
+enabled = true
+path = /opt/metasploit/
+show_exploits = true
+auto_generate_report = true
+report_path = reports/metasploit
+
+[WEB]
+enabled = false
+host = 127.0.0.1
+port = 8080

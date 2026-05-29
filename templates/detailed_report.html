@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ title }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        h1, h2, h3 {
+            color: #333;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .critical {
+            background-color: #ffdddd;
+        }
+        .high {
+            background-color: #ffe6cc;
+        }
+        .medium {
+            background-color: #ffffcc;
+        }
+        .low {
+            background-color: #e6ffe6;
+        }
+        .info {
+            background-color: #e6f2ff;
+        }
+        .summary {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <p>Report generated on: {{ report_date }}</p>
+    
+    <div class="summary">
+        <h2>Device Summary</h2>
+        <table>
+            <tr>
+                <th>Property</th>
+                <th>Value</th>
+            </tr>
+            <tr>
+                <td>IP Address</td>
+                <td>{{ device.ip_address }}</td>
+            </tr>
+            <tr>
+                <td>Hostname</td>
+                <td>{{ device.hostname }}</td>
+            </tr>
+            <tr>
+                <td>MAC Address</td>
+                <td>{{ device.mac_address }}</td>
+            </tr>
+            <tr>
+                <td>OS</td>
+                <td>{{ device.os }}</td>
+            </tr>
+            <tr>
+                <td>Device Type</td>
+                <td>{{ device.device_type }}</td>
+            </tr>
+            <tr>
+                <td>Vendor</td>
+                <td>{{ device.vendor }}</td>
+            </tr>
+            <tr>
+                <td>Total Vulnerabilities</td>
+                <td>{{ total_vulns }}</td>
+            </tr>
+        </table>
+        
+        <h3>Vulnerability Summary</h3>
+        <ul>
+            <li>Critical: {{ risk_counts.Critical }}</li>
+            <li>High: {{ risk_counts.High }}</li>
+            <li>Medium: {{ risk_counts.Medium }}</li>
+            <li>Low: {{ risk_counts.Low }}</li>
+            <li>Info: {{ risk_counts.Info }}</li>
+        </ul>
+    </div>
+    
+    <h2>Open Ports</h2>
+    {% if open_ports %}
+    <table>
+        <tr>
+            <th>Port</th>
+            <th>Protocol</th>
+            <th>Service</th>
+            <th>Version</th>
+            <th>State</th>
+        </tr>
+        {% for port in open_ports %}
+        <tr>
+            <td>{{ port.port_number }}</td>
+            <td>{{ port.protocol }}</td>
+            <td>{{ port.service }}</td>
+            <td>{{ port.version }}</td>
+            <td>{{ port.state }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p>No open ports found for this device.</p>
+    {% endif %}
+    
+    <h2>Vulnerabilities</h2>
+    {% if vulnerabilities %}
+    <table>
+        <tr>
+            <th>Name</th>
+            <th>Risk Level</th>
+            <th>Description</th>
+            <th>Solution</th>
+            <th>Exploit Available</th>
+        </tr>
+        {% for vuln in vulnerabilities %}
+        <tr class="{{ vuln.risk_level|lower }}">
+            <td>{{ vuln.name }}</td>
+            <td>{{ vuln.risk_level }}</td>
+            <td>{{ vuln.description }}</td>
+            <td>{{ vuln.solution }}</td>
+            <td>{{ 'Yes' if vuln.exploit_available else 'No' }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p>No vulnerabilities found for this device.</p>
+    {% endif %}
+</body>
+</html>

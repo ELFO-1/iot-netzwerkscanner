@@ -1,0 +1,45 @@
+# ==== Secrets / lokale Konfiguration ====
+# Echte Config mit API-Keys NIEMALS committen – nur die .example-Vorlage.
+iot_config2.ini
+*.ini
+!*.ini.example
+
+# ==== Datenbank ====
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ==== Laufzeit-Ausgaben ====
+logs/
+exports/
+reports/
+
+# ==== ML-Modelle / Trainingsartefakte ====
+*.pkl
+modules/models/*.pkl
+
+# ==== Python ====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ==== Claude Code Session-Daten ====
+.claude/
+
+# ==== Editor / OS ====
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

@@ -1,0 +1,24 @@
+{
+  "devices": [
+    {
+      "ip": "192.168.0.1",
+      "mac": "",
+      "vendor": "AVM",
+      "hostname": "",
+      "os": "",
+      "services": ""
+    },
+    {
+      "ip": "192.168.0.20",
+      "mac": "",
+      "vendor": "VU+",
+      "hostname": "",
+      "os": "",
+      "services": ""
+    }
+  ],
+  "labels": [
+    "Router",
+    "Sat-Reciver_linux"
+  ]
+}

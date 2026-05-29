@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ title }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        h1, h2, h3 {
+            color: #333;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .critical {
+            background-color: #ffdddd;
+        }
+        .high {
+            background-color: #ffe6cc;
+        }
+        .medium {
+            background-color: #ffffcc;
+        }
+        .low {
+            background-color: #e6ffe6;
+        }
+        .info {
+            background-color: #e6f2ff;
+        }
+        .summary {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <p>Report generated on: {{ report_date }}</p>
+    
+    <div class="summary">
+        <h2>Remediation Summary</h2>
+        <p>Total Vulnerabilities: {{ total_vulns }}</p>
+        <p>This plan provides a prioritized list of vulnerabilities to address, starting with the most critical issues.</p>
+    </div>
+    
+    {% if grouped_vulns.Critical %}
+    <h2>Critical Vulnerabilities</h2>
+    <p>These vulnerabilities should be addressed immediately as they pose a significant risk to your network.</p>
+    <table>
+        <tr>
+            <th>Vulnerability</th>
+            <th>Device</th>
+            <th>Description</th>
+            <th>Solution</th>
+        </tr>
+        {% for vuln in grouped_vulns.Critical %}
+        <tr class="critical">
+            <td>{{ vuln.name }}</td>
+            <td>{{ vuln.device.hostname or vuln.device.ip_address }}</td>
+            <td>{{ vuln.description }}</td>
+            <td>{{ vuln.solution }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+    
+    {% if grouped_vulns.High %}
+    <h2>High Risk Vulnerabilities</h2>
+    <p>These vulnerabilities should be addressed as soon as possible after the critical issues.</p>
+    <table>
+        <tr>
+            <th>Vulnerability</th>
+            <th>Device</th>
+            <th>Description</th>
+            <th>Solution</th>
+        </tr>
+        {% for vuln in grouped_vulns.High %}
+        <tr class="high">
+            <td>{{ vuln.name }}</td>
+            <td>{{ vuln.device.hostname or vuln.device.ip_address }}</td>
+            <td>{{ vuln.description }}</td>
+            <td>{{ vuln.solution }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+    
+    {% if grouped_vulns.Medium %}
+    <h2>Medium Risk Vulnerabilities</h2>
+    <p>These vulnerabilities should be addressed as part of your regular maintenance schedule.</p>
+    <table>
+        <tr>
+            <th>Vulnerability</th>
+            <th>Device</th>
+            <th>Description</th>
+            <th>Solution</th>
+        </tr>
+        {% for vuln in grouped_vulns.Medium %}
+        <tr class="medium">
+            <td>{{ vuln.name }}</td>
+            <td>{{ vuln.device.hostname or vuln.device.ip_address }}</td>
+            <td>{{ vuln.description }}</td>
+            <td>{{ vuln.solution }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+    
+    {% if grouped_vulns.Low %}
+    <h2>Low Risk Vulnerabilities</h2>
+    <p>These vulnerabilities should be addressed as time permits.</p>
+    <table>
+        <tr>
+            <th>Vulnerability</th>
+            <th>Device</th>
+            <th>Description</th>
+            <th>Solution</th>
+        </tr>
+        {% for vuln in grouped_vulns.Low %}
+        <tr class="low">
+            <td>{{ vuln.name }}</td>
+            <td>{{ vuln.device.hostname or vuln.device.ip_address }}</td>
+            <td>{{ vuln.description }}</td>
+            <td>{{ vuln.solution }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+    
+    {% if grouped_vulns.Info %}
+    <h2>Informational Items</h2>
+    <p>These items do not pose a direct security risk but may provide useful information.</p>
+    <table>
+        <tr>
+            <th>Item</th>
+            <th>Device</th>
+            <th>Description</th>
+            <th>Notes</th>
+        </tr>
+        {% for vuln in grouped_vulns.Info %}
+        <tr class="info">
+            <td>{{ vuln.name }}</td>
+            <td>{{ vuln.device.hostname or vuln.device.ip_address }}</td>
+            <td>{{ vuln.description }}</td>
+            <td>{{ vuln.solution }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endif %}
+    
+    <h2>General Recommendations</h2>
+    <ol>
+        <li>Implement a regular patching schedule for all systems</li>
+        <li>Conduct regular vulnerability scans</li>
+        <li>Implement network segmentation to limit the impact of breaches</li>
+        <li>Review and update firewall rules</li>
+        <li>Implement strong authentication mechanisms</li>
+        <li>Provide security awareness training for all users</li>
+        <li>Develop and test an incident response plan</li>
+    </ol>
+</body>
+</html>
