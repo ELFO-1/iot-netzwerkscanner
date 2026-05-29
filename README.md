@@ -11,7 +11,8 @@ Ein umfassendes, interaktives CLI-Tool zur Erkennung, Identifikation und Sicherh
 | Kategorie | Funktionen |
 |---|---|
 | **Scanning** | Netzwerk-Discovery, Portscan (schnell / vollständig), Service- & OS-Erkennung, Aggressiv-Scan |
-| **Schwachstellen** | Vulnerability-Scan via Vulners-API, SSL/TLS-Prüfung, Standardpasswort-Test, Port-Knocking |
+| **Schwachstellen** | Vulnerability-Scan via Vulners-API (mit Retry), SSL/TLS-Prüfung, Standardpasswort-Test (echte Logins), Port-Knocking |
+| **Brute-Force** | Echte Login-Versuche gegen SSH, FTP, Telnet, HTTP (Basic) & HTTP-Formulare – mit Wortlisten-Unterstützung |
 | **Metasploit** | Exploit-Suche, MSFRPC-Integration, automatisierte Exploit-Übersichten |
 | **ML-Klassifikation** | Random-Forest-Klassifikator zur Geräteerkennung (Router, Kamera, IoT, etc.) |
 | **Export** | HTML-Berichte (Detail, Vuln-Report, Executive Summary), CSV, JSON, PDF (optional), XML |
@@ -60,7 +61,15 @@ source .venv/bin/activate
 
 # 3. Abhängigkeiten installieren
 pip install -r requirements.txt
+
+# 4. Konfiguration aus der Vorlage anlegen und eigene API-Keys eintragen
+cp iot_config2.ini.example iot_config2.ini
+# danach iot_config2.ini öffnen und mac_api_key / vulners_api_key setzen
 ```
+
+> **Hinweis:** `iot_config2.ini` ist absichtlich per `.gitignore` ausgeschlossen
+> (enthält API-Keys) – nach dem Klonen ist nur die Vorlage `iot_config2.ini.example`
+> vorhanden. Schritt 4 ist daher erforderlich.
 
 ---
 
@@ -132,18 +141,41 @@ python3 train_classifier.py
 
 ── Erweiterte Pentesting-Funktionen ──────
 12  SSL/TLS-Konfiguration prüfen
-13  Standardpasswörter testen
+13  Standardpasswörter testen (echte Logins)
 14  Port-Knocking-Tests
 15  Metasploit-Exploits suchen
-16  Brute-Force-Angriff (in Entwicklung)
+16  Brute-Force-Angriff (SSH / FTP / Telnet / HTTP / HTTP-Form)
 
 ── Export & Konfiguration ────────────────
-17  Ergebnisse exportieren
-18  Scan-Verlauf anzeigen
-19  Scan-Profile verwalten
-20  Einstellungen (iot_config2.ini)
-21  Beenden
+17  Ergebnisse exportieren (alle Scans)
+18  Nur letzten Scan exportieren
+19  Scan-Verlauf anzeigen
+20  Scan-Profile verwalten
+21  Einstellungen (iot_config2.ini)
+22  Beenden
 ```
+
+---
+
+## Brute-Force (Option 16)
+
+Führt **echte** Anmeldeversuche gegen einen Dienst durch (keine Simulation). Unterstützt:
+
+| Dienst | Methode |
+|---|---|
+| `ssh` | echter SSH-Login (benötigt `paramiko`) |
+| `ftp` | FTP-Login (`ftplib`) |
+| `telnet` | roher Socket-Login (Treffer nur bei klarem Shell-Prompt) |
+| `http` | HTTP-Basic-Auth |
+| `http-form` | Formular-Login mit automatischer Felderkennung |
+
+Benutzername und Passwort akzeptieren jeweils: einen einzelnen Wert, eine
+Komma­liste (`admin,root,user`) **oder einen Pfad zu einer Wortliste** (z. B.
+`rockyou.txt`). Der Scan stoppt pro Benutzer beim ersten Treffer, pausiert kurz
+zwischen den Versuchen und bricht früh ab, wenn der Dienst nicht erreichbar ist.
+Lässt sich jederzeit mit `Strg+C` abbrechen.
+
+> Nur im eigenen Netz bzw. mit ausdrücklicher Genehmigung verwenden.
 
 ---
 
@@ -156,6 +188,13 @@ python3 train_classifier.py
 default_network = 192.168.0.0/24
 scan_timeout = 300
 max_parallel_scans = 5
+# Schwachstellen-Scan (Menüpunkt 3): NSE-Skriptkategorien + Zusatzskripte
+vuln_script_categories = vuln,exploit,auth,default
+extra_scripts = ssl-enum-ciphers,ssl-poodle,ssl-dh-params
+enable_brute = false          # NSE-brute-Skripte (langsam, kann nmap crashen)
+exclude_ssl_scripts = false
+host_timeout =                # leer = kein Timeout (für langsame Geräte)
+vulners_retries = 2           # gleicht Schwankungen der Vulners-API aus
 
 [DATABASE]
 db_name = iot_devices.db
@@ -209,14 +248,16 @@ Eigene nmap-Argumentprofile können in `scan_profiles.json` oder direkt im Menü
 ├── netzwerkscanner_v4.py       # Hauptprogramm & interaktives Menü
 ├── exporter.py                 # Fallback-Exporter (root-level)
 ├── train_classifier.py         # ML-Modell trainieren/verbessern
-├── iot_config2.ini             # Konfigurationsdatei
+├── iot_config2.ini.example     # Konfigurations-Vorlage (versioniert)
+├── iot_config2.ini             # Eigene Konfiguration (gitignored, lokal anlegen)
 ├── scan_profiles.json          # Nmap-Scan-Profile
-├── iot_devices.db              # SQLite-Datenbank (auto-erstellt)
+├── iot_devices.db              # SQLite-Datenbank (auto-erstellt, gitignored)
 ├── requirements.txt
+├── .gitignore
 │
 ├── modules/
 │   ├── scanner_metasploit.py   # Nmap-Scanner + Vulners-CVE-Lookup
-│   ├── analyzer.py             # SSL/TLS, Standardpasswörter, Verhaltensprofile
+│   ├── analyzer.py             # SSL/TLS, Standardpasswörter, Brute-Force, Verhaltensprofile
 │   ├── database.py             # SQLite-CRUD (Geräte, Schwachstellen, Historie)
 │   ├── config.py               # INI-Konfiguration + Scan-Profile
 │   ├── exporter.py             # Jinja2-Export (HTML, CSV, JSON, PDF, XML)
@@ -241,17 +282,24 @@ Eigene nmap-Argumentprofile können in `scan_profiles.json` oder direkt im Menü
 
 ## Export-Formate
 
-Nach einem Scan können Ergebnisse über **Option 17** oder `--generate-reports` exportiert werden:
+Ergebnisse können exportiert werden über:
+
+- **Option 17** – alle Scans / die komplette Datenbank
+- **Option 18** – nur den zuletzt durchgeführten Scan (Dateien erhalten das Präfix `last_scan_`)
+- `--generate-reports` – Export aus der aktuellen Datenbank (Headless)
+
+Erzeugte Dateien (Formate konfigurierbar über `default_format`):
 
 | Datei | Inhalt |
 |---|---|
-| `devices_*.csv` / `.json` | Alle gefundenen Geräte |
-| `vulnerabilities_*.csv` / `.json` | Alle gefundenen Schwachstellen |
-| `devices_*.html` | Einfache Gerätetabelle |
-| `detailed_report_*_N.html` | Detailbericht pro Gerät |
-| `vulnerability_report_*.html` | Vollständiger Schwachstellenbericht |
-| `executive_summary_*.html` | Management-Zusammenfassung |
-| `security_report.pdf` | PDF-Export (WeasyPrint erforderlich) |
+| `vulnerability_report_*.html` | Vollständiger Schwachstellenbericht (HTML) |
+| `security_report_*.csv` | Geräte + Schwachstellen als CSV |
+| `security_report_*.json` | Geräte + Schwachstellen als JSON |
+| `security_report_*.xml` | Geräte + Schwachstellen als XML |
+| `security_report_*.pdf` | PDF-Export (WeasyPrint erforderlich) |
+| `export_summary_*.txt` | Übersicht der erzeugten Dateien |
+
+> Beim Export „nur letzter Scan" (Option 18) tragen alle Dateien zusätzlich das Präfix `last_scan_`.
 
 ---
 
