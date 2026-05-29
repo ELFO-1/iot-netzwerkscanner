@@ -779,10 +779,11 @@ class IOTScanner:
             return {"error": str(e)}
     
     def brute_force(self, ip: str, service: str, username: str, password: str,
-                    port: Optional[int] = None) -> Any:
+                    port: Optional[int] = None, workers: int = 8) -> Any:
         """Führt einen Brute-Force-Angriff gegen einen Dienst durch"""
         try:
-            return self.analyzer.brute_force(ip, service, username, password, port=port)
+            return self.analyzer.brute_force(ip, service, username, password,
+                                             port=port, workers=workers)
         except Exception as e:
             logging.error(f"Fehler beim Brute-Force-Angriff: {str(e)}")
             print(f"{Color.RED}Fehler beim Brute-Force: {str(e)}{Color.RESET}")
@@ -1553,9 +1554,11 @@ class IOTScanner:
                     port_in = input(f"{Color.YELLOW}Port (Enter für Standard des Dienstes): {Color.RESET}").strip()
                     username = input(f"{Color.YELLOW}Benutzername (oder Pfad zur Benutzerliste): {Color.RESET}")
                     password = input(f"{Color.YELLOW}Passwort (oder Pfad zur Passwortliste): {Color.RESET}")
+                    threads_in = input(f"{Color.YELLOW}Parallele Threads (Enter für 8): {Color.RESET}").strip()
                     port = int(port_in) if port_in.isdigit() else None
+                    workers = int(threads_in) if threads_in.isdigit() and int(threads_in) > 0 else 8
                     if ip and service:
-                        self.brute_force(ip, service, username, password, port)
+                        self.brute_force(ip, service, username, password, port, workers)
                     else:
                         print(f"{Color.RED}IP-Adresse und Dienst sind erforderlich.{Color.RESET}")
                     self._wait_for_user()

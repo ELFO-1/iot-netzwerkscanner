@@ -171,9 +171,10 @@ Führt **echte** Anmeldeversuche gegen einen Dienst durch (keine Simulation). Un
 
 Benutzername und Passwort akzeptieren jeweils: einen einzelnen Wert, eine
 Komma­liste (`admin,root,user`) **oder einen Pfad zu einer Wortliste** (z. B.
-`rockyou.txt`). Der Scan stoppt pro Benutzer beim ersten Treffer, pausiert kurz
-zwischen den Versuchen und bricht früh ab, wenn der Dienst nicht erreichbar ist.
-Lässt sich jederzeit mit `Strg+C` abbrechen.
+`rockyou.txt`). Die Versuche laufen **parallel** (Thread-Anzahl wählbar, Standard 8),
+was große Wortlisten deutlich beschleunigt. Der Scan stoppt pro Benutzer beim
+ersten Treffer und bricht früh ab, wenn der Dienst nicht erreichbar ist. Lässt
+sich jederzeit mit `Strg+C` abbrechen.
 
 > Nur im eigenen Netz bzw. mit ausdrücklicher Genehmigung verwenden.
 

