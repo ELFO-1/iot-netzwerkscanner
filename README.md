@@ -28,6 +28,7 @@ Ein umfassendes, interaktives CLI-Tool zur Erkennung, Identifikation und Sicherh
 - Linux (empfohlen) oder Windows
 - Python 3.10+
 - **`nmap`** muss systemweit installiert sein
+- python3-nmap
 - Root- / Administratorrechte für Raw-Socket-Scans
 
 ```bash
@@ -36,6 +37,8 @@ sudo pacman -S nmap
 
 # Debian / Ubuntu
 sudo apt install nmap
+sudo apt install python3-nmap
+
 
 # Fedora / RHEL
 sudo dnf install nmap
