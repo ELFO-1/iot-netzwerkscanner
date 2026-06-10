@@ -21,6 +21,7 @@ import sqlite3
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from threading import Timer  # Für die Fortschrittsanzeige
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import nmap
 from .utils import Color, decode_unicode_escape
 
@@ -151,6 +152,20 @@ class Scanner:
             return f'{cat_expr} and not ssl-*'
         return cat_expr
 
+    def _write_vulners_args_file(self):
+        """Schreibt den Vulners-API-Key in eine temporäre --script-args-file.
+
+        So taucht der Key nicht auf der nmap-Kommandozeile auf, wo er für
+        alle lokalen Benutzer über die Prozessliste (ps/htop) sichtbar wäre.
+        Rückgabe: Dateipfad oder None (Aufrufer muss die Datei löschen).
+        """
+        if not getattr(self, 'vulners_api_key', None):
+            return None
+        tf = tempfile.NamedTemporaryFile(mode='w', suffix='.args', delete=False)
+        tf.write(f"vulners.apikey={self.vulners_api_key}\n")
+        tf.close()
+        return tf.name
+
     def _run_with_spinner(self, cmd, label='Scanning'):
         """Führt einen Subprozess aus und zeigt dabei einen Fortschritts-Spinner an"""
         import threading
@@ -202,23 +217,28 @@ class Scanner:
 
         port_arg = ','.join(str(p) for p in ports)
         cve_by_port = {}
-        for attempt in range(1, retries + 1):
-            cmd = ['nmap', '-sV', '-T4', '-p', port_arg, '--script', 'vulners',
-                   '--script-args', f'vulners.apikey={self.vulners_api_key}', host]
-            result = self._run_with_spinner(cmd, f'vulners-Lookup {attempt}/{retries} für {host}')
-            if result.returncode != 0:
-                logging.warning(f"vulners-Retry {attempt} für {host} fehlgeschlagen (Code {result.returncode})")
-                continue
-            for port in ports:
-                ps = re.search(rf'{port}/tcp\s+open.*?(?=^\d+/tcp\s|\Z)',
-                               result.stdout, re.DOTALL | re.MULTILINE)
-                if ps:
-                    cves = [c.strip() for c in re.findall(r'(CVE-\d{4}-\d{4,7}[^\n]*)', ps.group(0))]
-                    if cves:
-                        cve_by_port.setdefault(str(port), set()).update(cves)
-            # Sobald irgendein Port CVEs liefert, ist der Dienst erreichbar – Schluss
-            if cve_by_port:
-                break
+        args_file = self._write_vulners_args_file()
+        try:
+            for attempt in range(1, retries + 1):
+                cmd = ['nmap', '-sV', '-T4', '-p', port_arg, '--script', 'vulners',
+                       '--script-args-file', args_file, host]
+                result = self._run_with_spinner(cmd, f'vulners-Lookup {attempt}/{retries} für {host}')
+                if result.returncode != 0:
+                    logging.warning(f"vulners-Retry {attempt} für {host} fehlgeschlagen (Code {result.returncode})")
+                    continue
+                for port in ports:
+                    ps = re.search(rf'{port}/tcp\s+open.*?(?=^\d+/tcp\s|\Z)',
+                                   result.stdout, re.DOTALL | re.MULTILINE)
+                    if ps:
+                        cves = [c.strip() for c in re.findall(r'(CVE-\d{4}-\d{4,7}[^\n]*)', ps.group(0))]
+                        if cves:
+                            cve_by_port.setdefault(str(port), set()).update(cves)
+                # Sobald irgendein Port CVEs liefert, ist der Dienst erreichbar – Schluss
+                if cve_by_port:
+                    break
+        finally:
+            if args_file and os.path.exists(args_file):
+                os.unlink(args_file)
         return {p: sorted(v) for p, v in cve_by_port.items()}
 
     def _load_vulners_api_key(self) -> None:
@@ -408,19 +428,45 @@ class Scanner:
             results_df['device_type'] = None
             results_df['open_ports'] = None  # Neue Spalte für offene Ports
             
-            # Für jedes Gerät einen detaillierten Scan durchführen
+            # Alle Geräte in EINEM nmap-Lauf scannen – nmap parallelisiert die
+            # Hosts intern selbst, das ist deutlich schneller als ein
+            # Einzelscan pro Gerät nacheinander.
+            ips = [str(ip) for ip in devices_df['ip'].tolist() if ip]
+            print(f"\n{Color.YELLOW}Scanne {len(ips)} Geräte in einem Durchlauf "
+                  f"(Service-/OS-Erkennung)...{Color.RESET}")
+
+            import threading
+            progress_chars = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']
+            spin_idx = 0
+            stop_spin = threading.Event()
+
+            def _spin():
+                nonlocal spin_idx
+                while not stop_spin.wait(0.2):
+                    print(f"\r  {Color.BLUE}Identifiziere {progress_chars[spin_idx]}{Color.RESET} ",
+                          end='', flush=True)
+                    spin_idx = (spin_idx + 1) % len(progress_chars)
+
+            spin_thread = threading.Thread(target=_spin, daemon=True)
+            spin_thread.start()
+            try:
+                self.nm.scan(hosts=' '.join(ips), arguments='-sV -O --script=banner')
+            finally:
+                stop_spin.set()
+                spin_thread.join()
+                print("\r" + " " * 50 + "\r", end='', flush=True)
+
+            scanned_hosts = set(self.nm.all_hosts())
+
             for idx, device in devices_df.iterrows():
                 ip = device['ip']
                 print(f"\n{Color.YELLOW}Identifiziere Gerät: {ip}{Color.RESET}")
-                
+
                 try:
-                    # Führe einen Service-Scan durch
-                    self.nm.scan(ip, arguments='-sV -O --script=banner')
-                    
                     # Überprüfe, ob die IP in den Scan-Ergebnissen vorhanden ist
-                    if ip not in self.nm.all_hosts():
+                    if ip not in scanned_hosts:
                         raise Exception(f"Gerät {ip} konnte nicht gescannt werden. Möglicherweise ist es nicht erreichbar.")
-                    
+
                     # Extrahiere Dienste
                     services = []
                     open_ports = []
@@ -599,32 +645,82 @@ class Scanner:
             total_vulns = 0
             total_metasploit_vulns = 0
 
+            # Phase 1: nmap-Scans für alle Hosts PARALLEL ausführen.
+            # Anzahl gleichzeitiger Scans über [SCAN] max_parallel_scans steuerbar.
+            host_timeout = str(self._get_cfg(config, 'SCAN', 'host_timeout', '')).strip()
+            script_expr = self._build_vuln_script_expr(config)
+            try:
+                max_workers = int(str(self._get_cfg(
+                    config, 'SCAN', 'max_parallel_scans', '3')).strip() or '3')
+            except ValueError:
+                max_workers = 3
+            max_workers = max(1, min(max_workers, len(active_hosts)))
+
+            args_file = self._write_vulners_args_file()
+            if args_file:
+                logging.info("Verwende Vulners API-Key (via --script-args-file)")
+
+            def _build_cmd(target):
+                cmd = ['nmap', '-sV', '-T4', '--script', script_expr]
+                # Host-Timeout nur setzen, wenn konfiguriert. Ein zu kurzes Timeout
+                # bricht externe vulners-Lookups ab → es werden keine CVEs gefunden.
+                if host_timeout:
+                    cmd.extend(['--host-timeout', host_timeout])
+                if args_file:
+                    cmd.extend(['--script-args-file', args_file])
+                cmd.append(target)
+                return cmd
+
+            def _run_host_scan(target):
+                # check=False, damit nmaps stderr bei einem Absturz (z.B. SIGABRT
+                # durch ein fehlerhaftes NSE-Skript) auswertbar ist
+                return subprocess.run(
+                    _build_cmd(target),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    check=False
+                )
+
+            scan_results = {}
+            print(f"\n{Color.BLUE}Starte Schwachstellen-Scans für {len(active_hosts)} Host(s) "
+                  f"({max_workers} parallel)...{Color.RESET}")
+            try:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_run_host_scan, h): h for h in active_hosts}
+                    done_count = 0
+                    for future in as_completed(futures):
+                        h = futures[future]
+                        done_count += 1
+                        try:
+                            scan_results[h] = future.result()
+                            print(f"  {Color.GREEN}[{done_count}/{len(active_hosts)}] "
+                                  f"{h} gescannt{Color.RESET}")
+                        except Exception as scan_err:
+                            scan_results[h] = None
+                            logging.error(f"Fehler beim Scan von {h}: {str(scan_err)}")
+                            print(f"  {Color.RED}[{done_count}/{len(active_hosts)}] "
+                                  f"{h} fehlgeschlagen: {scan_err}{Color.RESET}")
+            finally:
+                if args_file and os.path.exists(args_file):
+                    os.unlink(args_file)
+
+            # Zusatzscan via msfconsole/db_nmap scannt jeden Host komplett erneut
+            # und liefert praktisch nie Zusatzfunde – daher standardmäßig aus.
+            enable_msf_scan = str(self._get_cfg(
+                config, 'SCAN', 'enable_msf_host_scan', 'false')).strip().lower() == 'true'
+
+            # Phase 2: Ergebnisse pro Host auswerten (sequenziell, übersichtliche Ausgabe)
             for host in active_hosts:
                 print(f"\n{Color.YELLOW}Prüfe Schwachstellen für: {host}{Color.RESET}")
 
                 try:
-                    # Standard nmap Schwachstellenscan – Script-Set konfigurierbar,
-                    # ssl-* standardmäßig ausgeschlossen (SIGABRT-Schutz)
-                    host_timeout = str(self._get_cfg(config, 'SCAN', 'host_timeout', '')).strip()
-                    script_expr = self._build_vuln_script_expr(config)
-                    nmap_cmd = ['nmap', '-sV', '-T4', '--script', script_expr]
-                    # Host-Timeout nur setzen, wenn konfiguriert. Ein zu kurzes Timeout
-                    # bricht externe vulners-Lookups ab → es werden keine CVEs gefunden.
-                    if host_timeout:
-                        nmap_cmd.extend(['--host-timeout', host_timeout])
-
-                    # Füge Vulners API-Key hinzu, wenn verfügbar
-                    if hasattr(self, 'vulners_api_key') and self.vulners_api_key:
-                        vulners_arg = f"vulners.apikey={self.vulners_api_key}"
-                        logging.info(f"Verwende Vulners API-Key für Scan von {host}")
-                        nmap_cmd.extend(['--script-args', vulners_arg])
-
-                    # Füge Host hinzu
-                    nmap_cmd.append(host)
-
-                    # Mit Spinner ausführen; check=False, damit nmaps stderr bei einem
-                    # Absturz (z.B. SIGABRT durch ein fehlerhaftes NSE-Skript) auswertbar ist
-                    result = self._run_with_spinner(nmap_cmd, f'Scanne {host}')
+                    result = scan_results.get(host)
+                    if result is None:
+                        print(f"  {Color.RED}Kein Scan-Ergebnis für {host} "
+                              f"(Scan fehlgeschlagen).{Color.RESET}")
+                        continue
 
                     # Negativer returncode = von Signal beendet (z.B. -6 = SIGABRT)
                     if result.returncode != 0:
@@ -659,11 +755,11 @@ class Scanner:
                     except Exception as raw_err:
                         logging.warning(f"Konnte rohe nmap-Ausgabe nicht speichern: {raw_err}")
 
-                    # Führe zusätzlich Metasploit-Scan durch, wenn verfügbar
+                    # Optionaler Zusatzscan via msfconsole (db_nmap) – nur wenn
+                    # [SCAN] enable_msf_host_scan = true gesetzt ist (langsam,
+                    # da jeder Host dabei komplett erneut gescannt wird)
                     metasploit_results = None
-                    if hasattr(self, 'metasploit_available') and self.metasploit_available:
-                        # Metasploit-Scan wurde deaktiviert, aber wir rufen die Funktion trotzdem auf,
-                        # um die Darstellung der Sicherheitslücken beizubehalten
+                    if enable_msf_scan and self.metasploit_available:
                         metasploit_results = self.scan_vulnerabilities_with_metasploit(host)
 
                     # Verarbeite die Ergebnisse
@@ -1232,7 +1328,7 @@ class Scanner:
         os_lower = os_info.lower()
         
         # Router/Gateway
-        if any(s in services_text for s in ['FRITZ''AVM','avm','router', 'gateway', 'dhcp', 'dns']) or \
+        if any(s in services_text for s in ['fritz', 'avm', 'router', 'gateway', 'dhcp', 'dns']) or \
            any(s in os_lower for s in ['router', 'gateway', 'mikrotik', 'cisco', 'juniper', 'avm', 'tp-link']):
             device_type = 'Router/Gateway'
         
@@ -1243,7 +1339,7 @@ class Scanner:
         
         # Smart TV
         elif any(s in services_text for s in ['dlna', 'upnp', 'ssdp', 'hbbtv', 'smart tv']) or \
-             any(s in os_lower for s in ['samsung''smart tv', 'webos', 'tizen', 'android tv']):
+             any(s in os_lower for s in ['samsung', 'smart tv', 'webos', 'tizen', 'android tv']):
             device_type = 'Smart TV'
         
         # Thermostat/Klimaanlage

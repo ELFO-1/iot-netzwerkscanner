@@ -18,7 +18,10 @@ backup_interval = 86400
 [SCAN]
 default_network = 192.168.0.0/24
 scan_timeout = 300
+# Anzahl gleichzeitig laufender Schwachstellen-Scans (ein nmap-Prozess pro Host)
 max_parallel_scans = 5
+# Zusatzscan jedes Hosts via msfconsole/db_nmap (sehr langsam, selten Mehrwert)
+enable_msf_host_scan = false
 # Schwachstellen-Scan: NSE-Skriptkategorien und Zusatzskripte
 vuln_script_categories = vuln,exploit,auth,default
 extra_scripts = ssl-enum-ciphers,ssl-poodle,ssl-dh-params

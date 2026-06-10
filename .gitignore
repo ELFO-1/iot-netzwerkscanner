@@ -1,6 +1,7 @@
 # ==== Secrets / lokale Konfiguration ====
 # Echte Config mit API-Keys NIEMALS committen – nur die .example-Vorlage.
 iot_config2.ini
+API_KEYS.txt
 *.ini
 !*.ini.example
 

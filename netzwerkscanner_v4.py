@@ -840,6 +840,76 @@ class IOTScanner:
             logging.error(f"Fehler beim Anzeigen der Scan-Historie: {str(e)}")
             print(f"{Color.RED}Fehler beim Laden der Scan-Historie: {str(e)}{Color.RESET}")
     
+    def show_device_overview(self) -> None:
+        """Zeigt alle bekannten Geräte aus der Datenbank mit Schwachstellen-Anzahl an.
+
+        Geräte, die innerhalb der letzten 7 Tage zum ersten Mal gesehen wurden,
+        werden als NEU markiert – so fallen unbekannte Geräte im Netz sofort auf.
+        """
+        try:
+            with sqlite3.connect(self.db_name) as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT d.ip, d.hostname, d.vendor, d.device_type, d.open_ports,
+                           d.first_seen, d.last_seen,
+                           (SELECT COUNT(*) FROM vulnerability_details v
+                            WHERE v.device_ip = d.ip) AS vuln_count
+                    FROM devices d
+                    ORDER BY d.last_seen DESC
+                """)
+                rows = c.fetchall()
+
+            if not rows:
+                print(f"\n{Color.YELLOW}Noch keine Geräte in der Datenbank. "
+                      f"Führe zuerst einen Scan durch.{Color.RESET}")
+                return
+
+            now = datetime.now()
+            new_count = 0
+            total_vulns = 0
+
+            print(f"\n{Color.GREEN}Bekannte Geräte: {len(rows)}{Color.RESET}\n")
+            print(f"{Color.YELLOW}{'IP-Adresse':<16} {'Hostname':<22} {'Hersteller':<16} "
+                  f"{'Typ':<18} {'Ports':>5} {'Vulns':>5}  {'Zuletzt gesehen':<19}{Color.RESET}")
+            print("-" * 110)
+
+            for ip, hostname, vendor, dev_type, open_ports, first_seen, last_seen, vuln_count in rows:
+                ports_count = len([p for p in str(open_ports or '').replace(' ', '').split(',') if p])
+                total_vulns += vuln_count or 0
+
+                # NEU-Markierung: first_seen innerhalb der letzten 7 Tage
+                is_new = False
+                if first_seen:
+                    try:
+                        fs = datetime.strptime(str(first_seen)[:19], '%Y-%m-%d %H:%M:%S')
+                        is_new = (now - fs).days < 7
+                    except ValueError:
+                        pass
+                if is_new:
+                    new_count += 1
+
+                def _fmt(val, width):
+                    s = str(val) if val else '-'
+                    return s[:width - 1] + '…' if len(s) >= width else s
+
+                vuln_color = Color.RED if (vuln_count or 0) > 0 else Color.GREEN
+                line = (f"{_fmt(ip, 16):<16} {_fmt(hostname, 22):<22} {_fmt(vendor, 16):<16} "
+                        f"{_fmt(dev_type, 18):<18} {ports_count:>5} "
+                        f"{vuln_color}{vuln_count or 0:>5}{Color.RESET}  "
+                        f"{_fmt(last_seen, 19):<19}")
+                if is_new:
+                    line += f" {Color.YELLOW}NEU{Color.RESET}"
+                print(line)
+
+            print("-" * 110)
+            print(f"\nGesamt: {len(rows)} Geräte, {total_vulns} Schwachstellen-Einträge")
+            if new_count:
+                print(f"{Color.YELLOW}{new_count} Gerät(e) in den letzten 7 Tagen "
+                      f"neu im Netzwerk aufgetaucht.{Color.RESET}")
+        except Exception as e:
+            logging.error(f"Fehler bei der Geräteübersicht: {str(e)}")
+            print(f"{Color.RED}Fehler bei der Geräteübersicht: {str(e)}{Color.RESET}")
+
     def manage_scan_profiles(self) -> None:
         """Verwaltet die Scan-Profile"""
         try:
@@ -1442,10 +1512,11 @@ class IOTScanner:
             print("17. Ergebnisse exportieren (alle Scans)")
             print("18. Nur letzten Scan exportieren")
             print("19. Scan-Verlauf anzeigen")
+            print(self._d("20. Geräteübersicht (Datenbank, neue Geräte)"))
             print(f"{Color.BLUE}Konfiguration:{Color.RESET}")
-            print("20. Scan-Profile verwalten")
-            print("21. Einstellungen (iot_config2.ini)")
-            print("22. Beenden")
+            print("21. Scan-Profile verwalten")
+            print("22. Einstellungen (iot_config2.ini)")
+            print("23. Beenden")
             
             try:
                 choice = input(f"\n{Color.YELLOW}Wähle eine Option: {Color.RESET}")
@@ -1579,16 +1650,21 @@ class IOTScanner:
                     self._wait_for_user()
 
                 elif choice == "20":
+                    # Geräteübersicht aus der Datenbank
+                    self.show_device_overview()
+                    self._wait_for_user()
+
+                elif choice == "21":
                     # Scan-Profile verwalten
                     self.manage_scan_profiles()
                     # Kein wait_for_user nötig, da manage_scan_profiles eigene Eingabeaufforderung hat
 
-                elif choice == "21":
+                elif choice == "22":
                     # Einstellungen
                     self.show_settings()
                     # Kein wait_for_user nötig, da show_settings eigene Eingabeaufforderung hat
 
-                elif choice == "22":
+                elif choice == "23":
                     # Beenden
                     print(f"{Color.GREEN}Programm wird beendet...{Color.RESET}")
                     break
