@@ -849,10 +849,14 @@ class IOTScanner:
         try:
             with sqlite3.connect(self.db_name) as conn:
                 c = conn.cursor()
+                # Einzigartige Schwachstellen zählen: dieselbe CVE auf mehreren
+                # Ports (z.B. Samba auf 139 UND 445) ist EIN Fund, nicht mehrere.
+                # COALESCE(cve_id, description) fasst CVE-lose Funde sinnvoll zusammen.
                 c.execute("""
                     SELECT d.ip, d.hostname, d.vendor, d.device_type, d.open_ports,
                            d.first_seen, d.last_seen,
-                           (SELECT COUNT(*) FROM vulnerability_details v
+                           (SELECT COUNT(DISTINCT COALESCE(v.cve_id, v.description))
+                            FROM vulnerability_details v
                             WHERE v.device_ip = d.ip) AS vuln_count
                     FROM devices d
                     ORDER BY d.last_seen DESC
@@ -902,7 +906,10 @@ class IOTScanner:
                 print(line)
 
             print("-" * 110)
-            print(f"\nGesamt: {len(rows)} Geräte, {total_vulns} Schwachstellen-Einträge")
+            print(f"\nGesamt: {len(rows)} Geräte, {total_vulns} einzigartige Schwachstellen-Funde")
+            print(f"{Color.BLUE}Hinweis: Vulns werden über den Versions-Banner (vulners) erkannt. "
+                  f"Distros backporten\nFixes oft ohne Versionssprung – ein Teil der Funde sind "
+                  f"daher Fehlalarme auf gepatchten Systemen.{Color.RESET}")
             if new_count:
                 print(f"{Color.YELLOW}{new_count} Gerät(e) in den letzten 7 Tagen "
                       f"neu im Netzwerk aufgetaucht.{Color.RESET}")
