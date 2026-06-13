@@ -15,9 +15,27 @@
       "hostname": "",
       "os": "",
       "services": ""
+    },
+    {
+      "ip": "192.168.0.1",
+      "mac": "",
+      "vendor": "Avm",
+      "hostname": "",
+      "os": "",
+      "services": "Port 80: http, Port 443: https"
+    },
+    {
+      "ip": "192.168.0.20",
+      "mac": "",
+      "vendor": "Vu+",
+      "hostname": "",
+      "os": "Linux",
+      "services": ""
     }
   ],
   "labels": [
+    "Router",
+    "Sat-Reciver_linux",
     "Router",
     "Sat-Reciver_linux"
   ]
