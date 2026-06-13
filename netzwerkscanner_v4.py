@@ -1482,6 +1482,15 @@ class IOTScanner:
             # das TTY verändert hat – sonst sind Eingaben unsichtbar
             self._restore_terminal()
 
+            # -Pn-Sitzungsstatus zwischen Standard- und Spezial-Scans abgleichen:
+            # wurde -Pn in einem der beiden Subsysteme aktiviert, gilt es überall.
+            try:
+                pn_active = self.scanner.use_pn or self.nmap_special.use_pn
+                self.scanner.use_pn = pn_active
+                self.nmap_special.use_pn = pn_active
+            except AttributeError:
+                pass
+
             clear()  # Terminal vor jeder Menüanzeige leeren
 
             # Banner nur einmal beim Start anzeigen

@@ -26,7 +26,53 @@ class NmapSpecialScans:
         self.db_name = db_name
         self.nmap_available = self._check_nmap_available()
         self.scan_profiles = self._load_scan_profiles()
-    
+        # -Pn ("Host-Discovery überspringen") für Spezial-Scans erzwingen, wenn
+        # Ziele Ping blocken. Standard aus [SCAN] use_pn, zur Laufzeit per
+        # Abfrage für die restliche Sitzung aktivierbar.
+        self.use_pn = self._load_use_pn_setting()
+
+    def _load_use_pn_setting(self) -> bool:
+        """Liest den Standardwert für -Pn aus [SCAN] use_pn der iot_config2.ini"""
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read('iot_config2.ini')
+            if 'SCAN' in config and 'use_pn' in config['SCAN']:
+                return str(config['SCAN']['use_pn']).strip().lower() in ('true', '1', 'yes', 'ja')
+        except Exception as e:
+            logging.warning(f"Konnte [SCAN] use_pn nicht lesen: {str(e)}")
+        return False
+
+    def _inject_pn(self, options: str) -> str:
+        """Ergänzt -Pn in einem nmap-Options-String, wenn self.use_pn aktiv ist"""
+        if self.use_pn and '-Pn' not in options.split():
+            return f"-Pn {options}".strip()
+        return options
+
+    def _ask_enable_pn(self, context: str = '') -> bool:
+        """Fragt interaktiv, ob mit -Pn erneut gescannt werden soll.
+
+        Bei Bestätigung wird self.use_pn für die restliche Sitzung aktiviert.
+        Gibt True zurück, wenn -Pn (neu) aktiviert wurde.
+        """
+        if self.use_pn:
+            return False
+        msg = context or "Keine Hosts erreichbar – evtl. blockt das Netz ICMP-/ARP-Ping."
+        print(f"\n{Color.YELLOW}{msg}{Color.RESET}")
+        try:
+            answer = input(
+                f"{Color.YELLOW}Erneut mit -Pn versuchen (Host-Discovery "
+                f"überspringen)? [j/N]: {Color.RESET}"
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in ('j', 'ja', 'y', 'yes'):
+            self.use_pn = True
+            print(f"{Color.GREEN}-Pn ist jetzt für die restliche Sitzung aktiv.{Color.RESET}")
+            return True
+        return False
+
     def _check_nmap_available(self) -> bool:
         """Überprüft, ob Nmap verfügbar ist"""
         try:
@@ -128,32 +174,46 @@ class NmapSpecialScans:
                     "error": "Nmap ist nicht installiert oder nicht im PATH"
                 }
                 
-            print(f"\n{Color.GREEN}Starte {scan_name} auf {target}...{Color.RESET}")
-            print(f"{Color.BLUE}Verwendete Nmap-Optionen: {nmap_options}{Color.RESET}\n")
-            
-            # Erstelle den Nmap-Befehl
-            cmd = f"nmap {nmap_options} {target}"
-            
-            # Führe den Nmap-Befehl aus
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                text=True
-            )
-            
-            # Lese die Ausgabe
-            stdout, stderr = process.communicate()
-            
-            if process.returncode != 0:
+            def _run(options: str):
+                """Führt nmap mit den gegebenen Optionen aus → (returncode, stdout, stderr)"""
+                options = self._inject_pn(options)
+                cmd = f"nmap {options} {target}"
+                print(f"\n{Color.GREEN}Starte {scan_name} auf {target}...{Color.RESET}")
+                print(f"{Color.BLUE}Verwendete Nmap-Optionen: {options}{Color.RESET}\n")
+                process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    text=True
+                )
+                stdout, stderr = process.communicate()
+                return process.returncode, stdout, stderr
+
+            returncode, stdout, stderr = _run(nmap_options)
+
+            if returncode != 0:
                 print(f"{Color.RED}Fehler beim Ausführen des Scans: {stderr}{Color.RESET}")
                 return {
                     "success": False,
                     "error": stderr
                 }
-            
+
+            # nmap endet mit Code 0, auch wenn der Host Ping blockt ("Host seems
+            # down ... try -Pn"). In dem Fall -Pn anbieten und einmal wiederholen.
+            blocked = ('seems down' in stdout or '0 hosts up' in stdout)
+            if blocked and self._ask_enable_pn(
+                    f"{target} antwortet nicht auf Ping – möglicherweise wird Ping geblockt."):
+                print(f"\n{Color.GREEN}Wiederhole {scan_name} mit -Pn...{Color.RESET}")
+                returncode, stdout, stderr = _run(nmap_options)
+                if returncode != 0:
+                    print(f"{Color.RED}Fehler beim Ausführen des Scans: {stderr}{Color.RESET}")
+                    return {
+                        "success": False,
+                        "error": stderr
+                    }
+
             # Speichere die Ergebnisse in der Datenbank
             scan_id = str(uuid.uuid4())
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

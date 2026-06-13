@@ -81,13 +81,59 @@ class Scanner:
         self.current_network = None
         self.nm = nmap.PortScanner()
         self.vulners_api_key = None
+        # -Pn ("Host-Discovery überspringen"): nötig, wenn Ziele ICMP/ARP-Ping
+        # blocken. Standard aus [SCAN] use_pn (Default false), zur Laufzeit per
+        # Abfrage für die restliche Sitzung aktivierbar.
+        self.use_pn = self._load_use_pn_setting()
         self.metasploit_available = self._check_metasploit_installation()
         self._load_vulners_api_key()
-    
+
     # Hilfsfunktion zum Dekodieren von Strings
     def _d(self, text):
         """Dekodiert Unicode-Escape-Sequenzen"""
         return decode_unicode_escape(text)
+
+    def _load_use_pn_setting(self) -> bool:
+        """Liest den Standardwert für -Pn aus [SCAN] use_pn der iot_config2.ini"""
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read('iot_config2.ini')
+            if 'SCAN' in config and 'use_pn' in config['SCAN']:
+                return str(config['SCAN']['use_pn']).strip().lower() in ('true', '1', 'yes', 'ja')
+        except Exception as e:
+            logging.warning(f"Konnte [SCAN] use_pn nicht lesen: {str(e)}")
+        return False
+
+    def _pn_args(self, args: str) -> str:
+        """Ergänzt -Pn in einem nmap-Argument-String, wenn self.use_pn aktiv ist"""
+        if self.use_pn and '-Pn' not in args.split():
+            return f"-Pn {args}".strip()
+        return args
+
+    def _ask_enable_pn(self, context: str = '') -> bool:
+        """Fragt interaktiv, ob mit -Pn erneut gescannt werden soll.
+
+        Bei Bestätigung wird self.use_pn für die restliche Sitzung aktiviert.
+        Gibt True zurück, wenn -Pn (neu) aktiviert wurde.
+        """
+        if self.use_pn:
+            return False
+        msg = context or "Keine Hosts gefunden – evtl. blockt das Netz ICMP-/ARP-Ping."
+        print(f"\n{Color.YELLOW}{msg}{Color.RESET}")
+        try:
+            answer = input(
+                self._d(f"{Color.YELLOW}Erneut mit -Pn versuchen (Host-Discovery "
+                        f"überspringen)? [j/N]: {Color.RESET}")
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in ('j', 'ja', 'y', 'yes'):
+            self.use_pn = True
+            print(f"{Color.GREEN}-Pn ist jetzt für die restliche Sitzung aktiv.{Color.RESET}")
+            return True
+        return False
 
     def _mask_secrets(self, text):
         """Maskiert sensible Werte (z.B. den Vulners-API-Key) in Ausgaben/Logs"""
@@ -220,7 +266,8 @@ class Scanner:
         args_file = self._write_vulners_args_file()
         try:
             for attempt in range(1, retries + 1):
-                cmd = ['nmap', '-sV', '-T4', '-p', port_arg, '--script', 'vulners',
+                cmd = ['nmap'] + (['-Pn'] if self.use_pn else []) + \
+                      ['-sV', '-T4', '-p', port_arg, '--script', 'vulners',
                        '--script-args-file', args_file, host]
                 result = self._run_with_spinner(cmd, f'vulners-Lookup {attempt}/{retries} für {host}')
                 if result.returncode != 0:
@@ -338,36 +385,49 @@ class Scanner:
             # Führe nmap-Scan durch
             start_time = time.time()
 
+            def _extract_up_hosts():
+                """Liest die als 'up' gemeldeten Hosts aus dem letzten Scan aus"""
+                found = []
+                for host in self.nm.all_hosts():
+                    if 'status' in self.nm[host] and self.nm[host]['status']['state'] == 'up':
+                        host_info = {'ip': host}
+
+                        # MAC-Adresse und Hersteller extrahieren, wenn verfügbar
+                        if 'addresses' in self.nm[host]:
+                            if 'mac' in self.nm[host]['addresses']:
+                                host_info['mac'] = self.nm[host]['addresses']['mac']
+                                if 'vendor' in self.nm[host] and self.nm[host]['addresses']['mac'] in self.nm[host]['vendor']:
+                                    host_info['vendor'] = self.nm[host]['vendor'][self.nm[host]['addresses']['mac']]
+
+                        # Hostname extrahieren, wenn verfügbar
+                        if 'hostnames' in self.nm[host] and len(self.nm[host]['hostnames']) > 0:
+                            for hostname in self.nm[host]['hostnames']:
+                                if hostname['name'] and hostname['name'] != '':
+                                    host_info['hostname'] = hostname['name']
+                                    break
+
+                        found.append(host_info)
+                return found
+
             # Use the nmap PortScanner object instead of subprocess
-            self.nm.scan(hosts=network_range, arguments='-sn')
+            self.nm.scan(hosts=network_range, arguments=self._pn_args('-sn'))
 
             # Stoppe Fortschrittsanzeige
             stop_progress.set()
             spinner_thread.join()
             print("\r", end='', flush=True)  # Lösche Fortschrittsanzeige
-            
+
             # Verarbeite die Ergebnisse
-            hosts_list = []
-            for host in self.nm.all_hosts():
-                if 'status' in self.nm[host] and self.nm[host]['status']['state'] == 'up':
-                    host_info = {'ip': host}
-                    
-                    # MAC-Adresse und Hersteller extrahieren, wenn verfügbar
-                    if 'addresses' in self.nm[host]:
-                        if 'mac' in self.nm[host]['addresses']:
-                            host_info['mac'] = self.nm[host]['addresses']['mac']
-                            if 'vendor' in self.nm[host] and self.nm[host]['addresses']['mac'] in self.nm[host]['vendor']:
-                                host_info['vendor'] = self.nm[host]['vendor'][self.nm[host]['addresses']['mac']]
-                    
-                    # Hostname extrahieren, wenn verfügbar
-                    if 'hostnames' in self.nm[host] and len(self.nm[host]['hostnames']) > 0:
-                        for hostname in self.nm[host]['hostnames']:
-                            if hostname['name'] and hostname['name'] != '':
-                                host_info['hostname'] = hostname['name']
-                                break
-                    
-                    hosts_list.append(host_info)
-            
+            hosts_list = _extract_up_hosts()
+
+            # Kein Host gefunden? Evtl. blockt das Netz ICMP/ARP-Ping → -Pn anbieten.
+            if not hosts_list and self._ask_enable_pn(
+                    f"Keine Geräte auf {network_range} gefunden – möglicherweise wird "
+                    f"Ping geblockt."):
+                print(f"\n{Color.GREEN}Wiederhole Discovery mit -Pn...{Color.RESET}")
+                self.nm.scan(hosts=network_range, arguments=self._pn_args('-sn'))
+                hosts_list = _extract_up_hosts()
+
             # Erstelle DataFrame
             devices_df = pd.DataFrame(hosts_list)
             
@@ -450,7 +510,7 @@ class Scanner:
             spin_thread = threading.Thread(target=_spin, daemon=True)
             spin_thread.start()
             try:
-                self.nm.scan(hosts=' '.join(ips), arguments='-sV -O --script=banner')
+                self.nm.scan(hosts=' '.join(ips), arguments=self._pn_args('-sV -O --script=banner'))
             finally:
                 stop_spin.set()
                 spin_thread.join()
@@ -607,33 +667,46 @@ class Scanner:
             print(f"\n{Color.GREEN}Starte Schwachstellenanalyse auf {network_range}...{Color.RESET}")
 
             # Führe zuerst einen Basis-Scan durch, um aktive Hosts zu identifizieren
-            active_hosts = []
             vulnerabilities = {}
             metasploit_exploits = []
-            try:
+
+            def _discover_active_hosts():
+                """Basis-Scan (-sn, optional -Pn) → Liste der aktiven Hosts"""
+                cmd = ['nmap'] + (['-Pn'] if self.use_pn else []) + ['-sn', network_range]
                 result = subprocess.run(
-                    ['nmap', '-sn', network_range],
+                    cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL,
                     text=True,
                     check=True
                 )
-
-                # Extrahiere IP-Adressen
                 ip_pattern = r'Nmap scan report for ([\w.-]+)(?: \(([\d.]+)\))?'
-                matches = re.findall(ip_pattern, result.stdout)
-
-                for match in matches:
-                    hostname, ip = match
+                hosts = []
+                for hostname, ip in re.findall(ip_pattern, result.stdout):
                     if not ip:  # Wenn keine IP in Klammern, dann ist hostname die IP
                         ip = hostname
-                    active_hosts.append(ip)
+                    hosts.append(ip)
+                return hosts
 
+            try:
+                active_hosts = _discover_active_hosts()
             except Exception as e:
                 logging.error(f"Fehler beim Basis-Scan: {str(e)}")
                 print(f"\n{Color.RED}Fehler beim Basis-Scan: {str(e)}{Color.RESET}")
                 return None
+
+            # Kein Host gefunden? Evtl. blockt das Netz Ping → -Pn anbieten und erneut versuchen.
+            if not active_hosts and self._ask_enable_pn(
+                    f"Keine aktiven Hosts auf {network_range} gefunden – möglicherweise "
+                    f"wird Ping geblockt."):
+                print(f"\n{Color.GREEN}Wiederhole Basis-Scan mit -Pn...{Color.RESET}")
+                try:
+                    active_hosts = _discover_active_hosts()
+                except Exception as e:
+                    logging.error(f"Fehler beim Basis-Scan (-Pn): {str(e)}")
+                    print(f"\n{Color.RED}Fehler beim Basis-Scan: {str(e)}{Color.RESET}")
+                    return None
 
             if not active_hosts:
                 print(f"\n{Color.YELLOW}Keine aktiven Hosts gefunden.{Color.RESET}")
@@ -661,7 +734,8 @@ class Scanner:
                 logging.info("Verwende Vulners API-Key (via --script-args-file)")
 
             def _build_cmd(target):
-                cmd = ['nmap', '-sV', '-T4', '--script', script_expr]
+                cmd = ['nmap'] + (['-Pn'] if self.use_pn else []) + \
+                      ['-sV', '-T4', '--script', script_expr]
                 # Host-Timeout nur setzen, wenn konfiguriert. Ein zu kurzes Timeout
                 # bricht externe vulners-Lookups ab → es werden keine CVEs gefunden.
                 if host_timeout:
